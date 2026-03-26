@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import fastifyWebsocket from '@fastify/websocket';
+import { authMiddleware } from '@urule/auth-middleware';
 import { loadConfig } from './config.js';
 import { LangGraphAdapter } from './adapter/langgraph-adapter.js';
 import { AnthropicExecutor } from './adapter/anthropic-executor.js';
@@ -14,6 +15,9 @@ export async function buildServer() {
 
   // Register CORS
   await app.register(cors, { origin: true });
+
+  // Auth middleware
+  await app.register(authMiddleware, { publicRoutes: ['/healthz'] });
 
   // Register WebSocket plugin
   await app.register(fastifyWebsocket);
