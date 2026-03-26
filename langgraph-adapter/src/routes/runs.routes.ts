@@ -1,5 +1,18 @@
 import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
 import type { LangGraphAdapter, StartRunParams, ArtifactRef } from '../adapter/langgraph-adapter.js';
+
+const startRunSchema = z.object({
+  graphId: z.string().optional(),
+  input: z.object({}).passthrough(),
+  metadata: z.object({}).passthrough().optional(),
+});
+
+const emitArtifactSchema = z.object({
+  artifactId: z.string().optional(),
+  type: z.string(),
+  uri: z.string(),
+});
 
 export async function runsRoutes(
   app: FastifyInstance,
@@ -9,7 +22,11 @@ export async function runsRoutes(
 
   // Start a new run
   app.post<{ Body: StartRunParams }>('/api/v1/runs', async (request, reply) => {
-    const handle = await adapter.startRun(request.body);
+    const parsed = startRunSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Validation failed', details: parsed.error.issues });
+    }
+    const handle = await adapter.startRun(parsed.data as StartRunParams);
     return reply.status(201).send(handle);
   });
 
@@ -69,8 +86,12 @@ export async function runsRoutes(
   app.post<{ Params: { runId: string }; Body: ArtifactRef }>(
     '/api/v1/runs/:runId/artifacts',
     async (request, reply) => {
+      const parsed = emitArtifactSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'Validation failed', details: parsed.error.issues });
+      }
       try {
-        await adapter.emitArtifact(request.params.runId, request.body);
+        await adapter.emitArtifact(request.params.runId, parsed.data as ArtifactRef);
         return reply.status(201).send();
       } catch (err) {
         return reply.status(404).send({ error: (err as Error).message });
