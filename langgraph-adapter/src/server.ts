@@ -1,6 +1,8 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
+import swagger from '@fastify/swagger';
+import swaggerUi from '@fastify/swagger-ui';
 import fastifyWebsocket from '@fastify/websocket';
 import { authMiddleware } from '@urule/auth-middleware';
 import { loadConfig } from './config.js';
@@ -40,7 +42,24 @@ export async function buildServer() {
   });
 
   // Auth middleware
-  await app.register(authMiddleware, { publicRoutes: ['/healthz'] });
+  await app.register(authMiddleware, { publicRoutes: ['/healthz', '/docs'] });
+
+  // OpenAPI documentation
+  await app.register(swagger, {
+    openapi: {
+      info: {
+        title: 'Urule LangGraph Adapter API',
+        description: 'LangGraph + Anthropic Claude orchestrator adapter with streaming',
+        version: '0.1.0',
+      },
+      servers: [{ url: 'http://localhost:3002' }],
+      tags: [{ name: 'chat' }, { name: 'runs' }, { name: 'capabilities' }],
+    },
+  });
+
+  await app.register(swaggerUi, {
+    routePrefix: '/docs',
+  });
 
   // Register WebSocket plugin
   await app.register(fastifyWebsocket);
