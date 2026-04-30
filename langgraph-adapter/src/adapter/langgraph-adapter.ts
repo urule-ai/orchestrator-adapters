@@ -73,10 +73,10 @@ export class LangGraphAdapter implements OrchestratorAdapter {
     return { runId, status: record.status };
   }
 
-  async pauseForApproval(runId: string, _approval: ApprovalRequest): Promise<void> {
+  async pauseForApproval(runId: string, approval: ApprovalRequest): Promise<void> {
     const record = this.requireRun(runId);
     record.status = 'paused';
-    record.pendingApprovals.push(ulid());
+    record.pendingApprovals.push(approval.id ?? ulid());
   }
 
   async resumeRun(runId: string, input: ResumeInput): Promise<void> {

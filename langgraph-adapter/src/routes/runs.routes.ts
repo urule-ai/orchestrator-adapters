@@ -17,6 +17,7 @@ const startRunSchema = z.object({
 
 const pauseRunSchema = z
   .object({
+    id: z.string().optional(),
     title: z.string(),
     description: z.string(),
     action: z.string(),
@@ -81,12 +82,21 @@ export async function runsRoutes(
         return reply.code(400).send({ error: 'Validation failed', details: parsed.error.issues });
       }
       const body = parsed.data as Record<string, unknown>;
-      const approval = {
+      const approval: {
+        id?: string;
+        title: string;
+        description: string;
+        action: string;
+        context: Record<string, unknown>;
+      } = {
         title: typeof body['title'] === 'string' ? (body['title'] as string) : '',
         description: typeof body['description'] === 'string' ? (body['description'] as string) : '',
         action: typeof body['action'] === 'string' ? (body['action'] as string) : '',
         context: (body['context'] as Record<string, unknown>) ?? {},
       };
+      if (typeof body['id'] === 'string') {
+        approval.id = body['id'] as string;
+      }
       try {
         await adapter.pauseForApproval(request.params.runId, approval);
         return reply.status(204).send();

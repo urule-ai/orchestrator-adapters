@@ -17,6 +17,7 @@ const resumeRunSchema = z.object({
 });
 
 const pauseRunSchema = z.object({
+  id: z.string().optional(),
   title: z.string(),
   description: z.string(),
   action: z.string(),

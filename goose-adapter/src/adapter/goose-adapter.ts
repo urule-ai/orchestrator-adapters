@@ -55,10 +55,10 @@ export class GooseAdapter implements OrchestratorAdapter {
     return { runId, status: session.status };
   }
 
-  async pauseForApproval(runId: string, _approval: ApprovalRequest): Promise<void> {
+  async pauseForApproval(runId: string, approval: ApprovalRequest): Promise<void> {
     const run = this.requireRun(runId);
     await this.goose.pauseSession(run.sessionId);
-    run.pendingApprovals.push(ulid());
+    run.pendingApprovals.push(approval.id ?? ulid());
   }
 
   async resumeRun(runId: string, input: ResumeInput): Promise<void> {
