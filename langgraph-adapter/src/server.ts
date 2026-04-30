@@ -5,6 +5,7 @@ import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
 import fastifyWebsocket from '@fastify/websocket';
 import { authMiddleware } from '@urule/auth-middleware';
+import { errorHandler } from './middleware/error-handler.js';
 import { loadConfig } from './config.js';
 import { LangGraphAdapter } from './adapter/langgraph-adapter.js';
 import { AnthropicExecutor } from './adapter/anthropic-executor.js';
@@ -60,6 +61,9 @@ export async function buildServer() {
   await app.register(swaggerUi, {
     routePrefix: '/docs',
   });
+
+  // Error handler — redacts API keys / bearer tokens before they leave the service
+  app.setErrorHandler(errorHandler);
 
   // Register WebSocket plugin
   await app.register(fastifyWebsocket);

@@ -1,83 +1,48 @@
 import { ulid } from 'ulid';
+import type {
+  ApprovalRequest,
+  Artifact,
+  ArtifactRef,
+  HandoffParams,
+  OrchestratorAdapter,
+  OrchestratorCapabilities,
+  ResumeInput,
+  RunHandle,
+  RunState,
+  RunStatus,
+  StartRunParams,
+} from '@urule/orchestrator-contract';
 
-// ---------------------------------------------------------------------------
-// Inline interface definitions (will migrate to @urule/orchestrator-contract)
-// ---------------------------------------------------------------------------
-
-export type RunStatus =
-  | 'pending'
-  | 'running'
-  | 'paused'
-  | 'completed'
-  | 'cancelled'
-  | 'failed';
-
-export interface RunHandle {
-  runId: string;
-  status: RunStatus;
-  createdAt: string;
-}
-
-export interface RunState {
-  runId: string;
-  status: RunStatus;
-  createdAt: string;
-  updatedAt: string;
-  artifacts: ArtifactRef[];
-  metadata: Record<string, unknown>;
-}
-
-export interface ArtifactRef {
-  artifactId: string;
-  type: string;
-  uri: string;
-}
-
-export interface OrchestratorCapabilities {
-  durableCheckpoints: boolean;
-  humanInTheLoop: boolean;
-  subgraphs: boolean;
-  streaming: boolean;
-  artifactEmission: boolean;
-  cancellation: boolean;
-  resumability: boolean;
-}
-
-export interface StartRunParams {
-  graphId: string;
-  input: Record<string, unknown>;
-  metadata?: Record<string, unknown>;
-}
-
-export interface OrchestratorAdapter {
-  startRun(params: StartRunParams): Promise<RunHandle>;
-  pauseForApproval(runId: string): Promise<void>;
-  resumeRun(runId: string): Promise<void>;
-  cancelRun(runId: string): Promise<void>;
-  getState(runId: string): Promise<RunState>;
-  emitArtifact(runId: string, artifact: ArtifactRef): Promise<void>;
-  handoffAgent(runId: string, targetAgentId: string): Promise<void>;
-  getCapabilities(): OrchestratorCapabilities;
-}
-
-// ---------------------------------------------------------------------------
-// In-memory run store
-// ---------------------------------------------------------------------------
+// Re-export contract types so route handlers and tests have a single place
+// to import from without reaching across the package boundary.
+export type {
+  ApprovalRequest,
+  Artifact,
+  ArtifactRef,
+  HandoffParams,
+  OrchestratorAdapter,
+  OrchestratorCapabilities,
+  ResumeInput,
+  RunHandle,
+  RunState,
+  RunStatus,
+  StartRunParams,
+};
 
 interface RunRecord {
   runId: string;
-  graphId: string;
+  agentId: string;
+  workspaceId: string;
+  graphId?: string;
   status: RunStatus;
-  createdAt: string;
-  updatedAt: string;
+  startedAt: string;
+  completedAt?: string;
   input: Record<string, unknown>;
+  pendingApprovals: string[];
   artifacts: ArtifactRef[];
-  metadata: Record<string, unknown>;
+  output?: Record<string, unknown>;
+  error?: string;
 }
-
-// ---------------------------------------------------------------------------
-// LangGraphAdapter implementation
-// ---------------------------------------------------------------------------
 
 export class LangGraphAdapter implements OrchestratorAdapter {
   private readonly runs = new Map<string, RunRecord>();
@@ -90,62 +55,71 @@ export class LangGraphAdapter implements OrchestratorAdapter {
   async startRun(params: StartRunParams): Promise<RunHandle> {
     const runId = ulid();
     const now = new Date().toISOString();
+    const graphId = readString(params.config, 'graphId');
 
     const record: RunRecord = {
       runId,
-      graphId: params.graphId,
+      agentId: params.agentId,
+      workspaceId: params.workspaceId,
       status: 'running',
-      createdAt: now,
-      updatedAt: now,
+      startedAt: now,
       input: params.input,
+      pendingApprovals: [],
       artifacts: [],
-      metadata: params.metadata ?? {},
+      ...(graphId !== undefined ? { graphId } : {}),
     };
 
     this.runs.set(runId, record);
-
-    return { runId, status: record.status, createdAt: record.createdAt };
+    return { runId, status: record.status };
   }
 
-  async pauseForApproval(runId: string): Promise<void> {
+  async pauseForApproval(runId: string, _approval: ApprovalRequest): Promise<void> {
     const record = this.requireRun(runId);
     record.status = 'paused';
-    record.updatedAt = new Date().toISOString();
+    record.pendingApprovals.push(ulid());
   }
 
-  async resumeRun(runId: string): Promise<void> {
+  async resumeRun(runId: string, input: ResumeInput): Promise<void> {
     const record = this.requireRun(runId);
+    if (input.approvalId !== undefined) {
+      record.pendingApprovals = record.pendingApprovals.filter((id) => id !== input.approvalId);
+    } else {
+      record.pendingApprovals = [];
+    }
     record.status = 'running';
-    record.updatedAt = new Date().toISOString();
   }
 
-  async cancelRun(runId: string): Promise<void> {
+  async cancelRun(runId: string, _reason: string): Promise<void> {
     const record = this.requireRun(runId);
     record.status = 'cancelled';
-    record.updatedAt = new Date().toISOString();
+    record.completedAt = new Date().toISOString();
   }
 
   async getState(runId: string): Promise<RunState> {
     const record = this.requireRun(runId);
-
     return {
       runId: record.runId,
       status: record.status,
-      createdAt: record.createdAt,
-      updatedAt: record.updatedAt,
+      pendingApprovals: [...record.pendingApprovals],
       artifacts: [...record.artifacts],
-      metadata: { ...record.metadata },
+      startedAt: record.startedAt,
+      ...(record.completedAt !== undefined ? { completedAt: record.completedAt } : {}),
+      ...(record.output !== undefined ? { output: record.output } : {}),
+      ...(record.error !== undefined ? { error: record.error } : {}),
     };
   }
 
-  async emitArtifact(runId: string, artifact: ArtifactRef): Promise<void> {
+  async emitArtifact(runId: string, artifact: Artifact): Promise<void> {
     const record = this.requireRun(runId);
-    record.artifacts.push(artifact);
-    record.updatedAt = new Date().toISOString();
+    record.artifacts.push({
+      id: ulid(),
+      type: artifact.type,
+      name: artifact.name,
+    });
   }
 
-  async handoffAgent(_runId: string, _targetAgentId: string): Promise<void> {
-    // Placeholder — will forward to LangGraph sub-graph invocation
+  async handoffAgent(runId: string, _params: HandoffParams): Promise<void> {
+    this.requireRun(runId);
   }
 
   getCapabilities(): OrchestratorCapabilities {
@@ -160,10 +134,6 @@ export class LangGraphAdapter implements OrchestratorAdapter {
     };
   }
 
-  // -------------------------------------------------------------------------
-  // Internal helpers
-  // -------------------------------------------------------------------------
-
   private requireRun(runId: string): RunRecord {
     const record = this.runs.get(runId);
     if (!record) {
@@ -171,4 +141,10 @@ export class LangGraphAdapter implements OrchestratorAdapter {
     }
     return record;
   }
+}
+
+function readString(obj: Record<string, unknown> | undefined, key: string): string | undefined {
+  if (!obj) return undefined;
+  const value = obj[key];
+  return typeof value === 'string' ? value : undefined;
 }

@@ -101,14 +101,31 @@ describe('POST /api/v1/chat/action', () => {
 // POST /api/v1/runs — validation
 // ---------------------------------------------------------------------------
 describe('POST /api/v1/runs', () => {
-  it('returns 400 when input is missing', async () => {
+  it('returns 400 when agentId is missing', async () => {
     const res = await app.inject({
       method: 'POST',
       url: '/api/v1/runs',
-      payload: { graphId: 'g1' },
+      payload: { workspaceId: 'w1', input: {} },
     });
     expect(res.statusCode).toBe(400);
     expect(res.json()).toHaveProperty('error', 'Validation failed');
+  });
+
+  it('returns 201 with full contract payload', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/runs',
+      payload: {
+        agentId: 'a1',
+        workspaceId: 'w1',
+        input: { message: 'hello' },
+        config: { graphId: 'custom-graph' },
+      },
+    });
+    expect(res.statusCode).toBe(201);
+    const body = res.json();
+    expect(body.runId).toBeDefined();
+    expect(body.status).toBe('running');
   });
 });
 
@@ -116,11 +133,11 @@ describe('POST /api/v1/runs', () => {
 // POST /api/v1/runs/:runId/artifacts — validation
 // ---------------------------------------------------------------------------
 describe('POST /api/v1/runs/:runId/artifacts', () => {
-  it('returns 400 when type is missing', async () => {
+  it('returns 400 when mimeType is missing', async () => {
     const res = await app.inject({
       method: 'POST',
       url: '/api/v1/runs/run-123/artifacts',
-      payload: { uri: 's3://bucket/file.pdf' },
+      payload: { type: 'file', name: 'a.pdf' },
     });
     expect(res.statusCode).toBe(400);
     expect(res.json()).toHaveProperty('error', 'Validation failed');

@@ -1,18 +1,50 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import type { LangGraphAdapter, StartRunParams, ArtifactRef } from '../adapter/langgraph-adapter.js';
+import type {
+  Artifact,
+  LangGraphAdapter,
+  ResumeInput,
+  StartRunParams,
+} from '../adapter/langgraph-adapter.js';
 
 const startRunSchema = z.object({
-  graphId: z.string().optional(),
+  agentId: z.string(),
+  workspaceId: z.string(),
   input: z.object({}).passthrough(),
+  mcpBindings: z.array(z.string()).optional(),
+  config: z.object({}).passthrough().optional(),
+});
+
+const pauseRunSchema = z
+  .object({
+    title: z.string(),
+    description: z.string(),
+    action: z.string(),
+    context: z.object({}).passthrough(),
+  })
+  // Allow empty body for backward compat; default to a minimal approval payload.
+  .or(z.object({}).passthrough());
+
+const resumeRunSchema = z
+  .object({
+    decision: z.enum(['approve', 'reject']).optional(),
+    data: z.object({}).passthrough().optional(),
+    approvalId: z.string().optional(),
+  })
+  .or(z.object({}).passthrough());
+
+const emitArtifactSchema = z.object({
+  type: z.string(),
+  name: z.string(),
+  mimeType: z.string(),
+  content: z.string().optional(),
+  url: z.string().optional(),
   metadata: z.object({}).passthrough().optional(),
 });
 
-const emitArtifactSchema = z.object({
-  artifactId: z.string().optional(),
-  type: z.string(),
-  uri: z.string(),
-});
+const cancelRunSchema = z
+  .object({ reason: z.string() })
+  .or(z.object({}).passthrough());
 
 export async function runsRoutes(
   app: FastifyInstance,
@@ -20,8 +52,7 @@ export async function runsRoutes(
 ): Promise<void> {
   const { adapter } = opts;
 
-  // Start a new run
-  app.post<{ Body: StartRunParams }>('/api/v1/runs', async (request, reply) => {
+  app.post('/api/v1/runs', async (request, reply) => {
     const parsed = startRunSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.code(400).send({ error: 'Validation failed', details: parsed.error.issues });
@@ -30,7 +61,6 @@ export async function runsRoutes(
     return reply.status(201).send(handle);
   });
 
-  // Get run state
   app.get<{ Params: { runId: string } }>(
     '/api/v1/runs/:runId/state',
     async (request, reply) => {
@@ -43,12 +73,22 @@ export async function runsRoutes(
     },
   );
 
-  // Pause run (human-in-the-loop approval)
   app.post<{ Params: { runId: string } }>(
     '/api/v1/runs/:runId/pause',
     async (request, reply) => {
+      const parsed = pauseRunSchema.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'Validation failed', details: parsed.error.issues });
+      }
+      const body = parsed.data as Record<string, unknown>;
+      const approval = {
+        title: typeof body['title'] === 'string' ? (body['title'] as string) : '',
+        description: typeof body['description'] === 'string' ? (body['description'] as string) : '',
+        action: typeof body['action'] === 'string' ? (body['action'] as string) : '',
+        context: (body['context'] as Record<string, unknown>) ?? {},
+      };
       try {
-        await adapter.pauseForApproval(request.params.runId);
+        await adapter.pauseForApproval(request.params.runId, approval);
         return reply.status(204).send();
       } catch (err) {
         return reply.status(404).send({ error: (err as Error).message });
@@ -56,12 +96,15 @@ export async function runsRoutes(
     },
   );
 
-  // Resume run
   app.post<{ Params: { runId: string } }>(
     '/api/v1/runs/:runId/resume',
     async (request, reply) => {
+      const parsed = resumeRunSchema.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'Validation failed', details: parsed.error.issues });
+      }
       try {
-        await adapter.resumeRun(request.params.runId);
+        await adapter.resumeRun(request.params.runId, parsed.data as ResumeInput);
         return reply.status(204).send();
       } catch (err) {
         return reply.status(404).send({ error: (err as Error).message });
@@ -69,12 +112,14 @@ export async function runsRoutes(
     },
   );
 
-  // Cancel run
   app.delete<{ Params: { runId: string } }>(
     '/api/v1/runs/:runId',
     async (request, reply) => {
+      const parsed = cancelRunSchema.safeParse(request.body ?? {});
+      const body = parsed.success ? (parsed.data as Record<string, unknown>) : {};
+      const reason = typeof body['reason'] === 'string' ? (body['reason'] as string) : 'cancelled';
       try {
-        await adapter.cancelRun(request.params.runId);
+        await adapter.cancelRun(request.params.runId, reason);
         return reply.status(204).send();
       } catch (err) {
         return reply.status(404).send({ error: (err as Error).message });
@@ -82,8 +127,7 @@ export async function runsRoutes(
     },
   );
 
-  // Emit artifact for a run
-  app.post<{ Params: { runId: string }; Body: ArtifactRef }>(
+  app.post<{ Params: { runId: string }; Body: Artifact }>(
     '/api/v1/runs/:runId/artifacts',
     async (request, reply) => {
       const parsed = emitArtifactSchema.safeParse(request.body);
@@ -91,7 +135,7 @@ export async function runsRoutes(
         return reply.code(400).send({ error: 'Validation failed', details: parsed.error.issues });
       }
       try {
-        await adapter.emitArtifact(request.params.runId, parsed.data as ArtifactRef);
+        await adapter.emitArtifact(request.params.runId, parsed.data as Artifact);
         return reply.status(201).send();
       } catch (err) {
         return reply.status(404).send({ error: (err as Error).message });
