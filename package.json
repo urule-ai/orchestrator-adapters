@@ -1,0 +1,25 @@
+{
+  "name": "urule-orchestrator-adapters",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Orchestrator adapter implementations for Urule. Each adapter wraps a third-party AI orchestration runtime (LangGraph, Goose, etc.) behind the @urule/orchestrator-contract interface and exposes it as a Fastify HTTP service.",
+  "license": "Apache-2.0",
+  "workspaces": [
+    "goose-adapter",
+    "langgraph-adapter"
+  ],
+  "scripts": {
+    "build:all": "npm run build --workspaces --if-present",
+    "test:all": "npm run test --workspaces --if-present",
+    "lint:all": "npm run lint --workspaces --if-present",
+    "typecheck:all": "npm run typecheck --workspaces --if-present",
+    "clean": "npm run clean --workspaces --if-present && rm -rf node_modules"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/urule-ai/orchestrator-adapters.git"
+  }
+}

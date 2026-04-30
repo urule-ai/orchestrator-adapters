@@ -1,7 +1,7 @@
 {
-  "name": "@urule/langgraph-adapter",
-  "version": "0.1.0",
-  "description": "LangGraph orchestrator adapter — bridges Urule to LangGraph Server over HTTP",
+  "name": "@urule/goose-adapter",
+  "version": "0.1.0-spike.0",
+  "description": "Goose orchestrator adapter — bridges Urule to Goose daemon / Agent Client Protocol",
   "type": "module",
   "main": "./dist/index.js",
   "scripts": {
@@ -10,21 +10,13 @@
     "start": "node dist/index.js",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "eslint src/",
     "typecheck": "tsc --noEmit"
   },
   "license": "MIT",
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.39.0",
     "@fastify/cors": "^10.0.0",
-    "@fastify/rate-limit": "^10.3.0",
-    "@fastify/swagger": "^9.7.0",
-    "@fastify/swagger-ui": "^5.2.5",
-    "@fastify/websocket": "^11.0.0",
-    "@urule/auth-middleware": "file:../../urule/packages/auth-middleware",
     "@urule/orchestrator-contract": "file:../../orchestrator-contract",
     "fastify": "^5.0.0",
-    "nats": "^2.28.0",
     "ulid": "^2.3.0",
     "zod": "^4.3.6"
   },
