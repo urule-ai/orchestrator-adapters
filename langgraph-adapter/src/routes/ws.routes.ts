@@ -21,6 +21,25 @@ export const broadcast: BroadcastFn = (conversationId: string, event: Record<str
   }
 };
 
+/**
+ * Close every active WebSocket connection with a clean 1001 ("going away")
+ * frame. Called from the SIGTERM/SIGINT handler before `app.close()` so
+ * clients see an immediate disconnect rather than waiting for a TCP timeout.
+ */
+export function closeAllConnections(reason = 'Server shutting down'): number {
+  let closed = 0;
+  for (const sockets of connectionMap.values()) {
+    for (const ws of sockets) {
+      if (ws.readyState === 1) {
+        ws.close(1001, reason);
+        closed += 1;
+      }
+    }
+  }
+  connectionMap.clear();
+  return closed;
+}
+
 export async function wsRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Params: { conversationId: string } }>(
     '/api/v1/ws/conversations/:conversationId',

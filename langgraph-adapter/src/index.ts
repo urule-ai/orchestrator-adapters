@@ -1,5 +1,6 @@
 import { loadConfig, validateConfig } from './config.js';
 import { buildServer } from './server.js';
+import { closeAllConnections } from './routes/ws.routes.js';
 
 async function main() {
   const loadedConfig = loadConfig();
@@ -16,6 +17,10 @@ async function main() {
   // Graceful shutdown
   const shutdown = async () => {
     app.log.info('Shutting down...');
+    const closed = closeAllConnections();
+    if (closed > 0) {
+      app.log.info({ closed }, 'Closed active WebSocket connections');
+    }
     await app.close();
     process.exit(0);
   };
