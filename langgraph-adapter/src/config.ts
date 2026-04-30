@@ -18,15 +18,11 @@ export function loadConfig(): Config {
   };
 }
 
-export function validateConfig(config: Config): void {
+export function validateConfig(_config: Config): void {
   const missing: string[] = [];
-  if (!process.env['NATS_URL'] && config.natsUrl.includes('localhost')) {
-    missing.push('NATS_URL (using default)');
-  }
-  if (!process.env['REGISTRY_URL'] && config.registryUrl.includes('localhost')) {
-    missing.push('REGISTRY_URL (using default)');
-  }
+  if (!process.env['NATS_URL']) missing.push('NATS_URL');
+  if (!process.env['REGISTRY_URL']) missing.push('REGISTRY_URL');
   if (missing.length > 0) {
-    console.warn(`[urule-langgraph-adapter] Config warnings: ${missing.join(', ')}`);
+    throw new Error(`[urule-langgraph-adapter] Missing required env vars: ${missing.join(', ')}`);
   }
 }
