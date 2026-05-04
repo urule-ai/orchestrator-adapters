@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { ulid } from 'ulid';
+import { fetchWithCorrelation } from '@urule/correlation-id';
 import type { Config } from '../config.js';
 
 // ---------------------------------------------------------------------------
@@ -419,7 +420,7 @@ export class AnthropicExecutor {
     // Create task in state service
     let taskId: string | undefined;
     try {
-      const taskRes = await fetch(`${this.config.stateUrl}/api/v1/tasks`, {
+      const taskRes = await fetchWithCorrelation(`${this.config.stateUrl}/api/v1/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -442,7 +443,7 @@ export class AnthropicExecutor {
     let approvalId: string | undefined;
     try {
       const riskMap: Record<string, string> = { low: 'low', medium: 'medium', high: 'high' };
-      const approvalRes = await fetch(`${this.config.approvalsUrl}/api/v1/approvals`, {
+      const approvalRes = await fetchWithCorrelation(`${this.config.approvalsUrl}/api/v1/approvals`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -502,7 +503,7 @@ export class AnthropicExecutor {
     const priority = (input['priority'] as string) ?? 'medium';
 
     try {
-      const res = await fetch(`${this.config.stateUrl}/api/v1/tasks`, {
+      const res = await fetchWithCorrelation(`${this.config.stateUrl}/api/v1/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -531,7 +532,7 @@ export class AnthropicExecutor {
     const progressNote = (input['progress_note'] as string) ?? '';
 
     try {
-      await fetch(`${this.config.stateUrl}/api/v1/tasks/${taskId}`, {
+      await fetchWithCorrelation(`${this.config.stateUrl}/api/v1/tasks/${taskId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status }),
@@ -587,7 +588,7 @@ export class AnthropicExecutor {
 
         // Approve in approvals service
         try {
-          await fetch(`${this.config.approvalsUrl}/api/v1/approvals/${approvalId}/approve`, {
+          await fetchWithCorrelation(`${this.config.approvalsUrl}/api/v1/approvals/${approvalId}/approve`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ decidedBy: 'user', decisionNote: 'Approved via chat' }),
@@ -598,7 +599,7 @@ export class AnthropicExecutor {
         let hiredAgentName = agentRole;
         try {
           // Create a new agent in registry based on the role
-          const agentRes = await fetch(`${this.config.registryUrl}/api/v1/agents`, {
+          const agentRes = await fetchWithCorrelation(`${this.config.registryUrl}/api/v1/agents`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -613,7 +614,7 @@ export class AnthropicExecutor {
 
           // Transfer task ownership
           if (taskId) {
-            await fetch(`${this.config.stateUrl}/api/v1/tasks/${taskId}/assign`, {
+            await fetchWithCorrelation(`${this.config.stateUrl}/api/v1/tasks/${taskId}/assign`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -646,7 +647,7 @@ export class AnthropicExecutor {
       case 'deny_hiring': {
         const approvalId = actionPayload['approval_id'] as string;
         try {
-          await fetch(`${this.config.approvalsUrl}/api/v1/approvals/${approvalId}/deny`, {
+          await fetchWithCorrelation(`${this.config.approvalsUrl}/api/v1/approvals/${approvalId}/deny`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ decidedBy: 'user', decisionNote: 'Denied via chat' }),
@@ -675,7 +676,7 @@ export class AnthropicExecutor {
       case 'accept_task': {
         const taskId = actionPayload['task_id'] as string;
         try {
-          await fetch(`${this.config.stateUrl}/api/v1/tasks/${taskId}`, {
+          await fetchWithCorrelation(`${this.config.stateUrl}/api/v1/tasks/${taskId}`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ status: 'done' }),
@@ -704,7 +705,7 @@ export class AnthropicExecutor {
       case 'request_changes': {
         const taskId = actionPayload['task_id'] as string;
         try {
-          await fetch(`${this.config.stateUrl}/api/v1/tasks/${taskId}`, {
+          await fetchWithCorrelation(`${this.config.stateUrl}/api/v1/tasks/${taskId}`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ status: 'in_progress' }),
@@ -741,7 +742,7 @@ export class AnthropicExecutor {
 
   private async fetchAgentConfig(agentId: string): Promise<AgentConfig> {
     try {
-      const res = await fetch(`${this.config.registryUrl}/api/v1/agents/${agentId}`);
+      const res = await fetchWithCorrelation(`${this.config.registryUrl}/api/v1/agents/${agentId}`);
       if (!res.ok) return {};
       const agent = (await res.json()) as { config?: AgentConfig };
       return agent.config ?? {};
@@ -753,12 +754,12 @@ export class AnthropicExecutor {
   private async fetchProviderKey(workspaceId: string, providerId?: string): Promise<ProviderKey> {
     try {
       if (providerId) {
-        const res = await fetch(`${this.config.registryUrl}/api/v1/providers/${providerId}/key`);
+        const res = await fetchWithCorrelation(`${this.config.registryUrl}/api/v1/providers/${providerId}/key`);
         if (res.ok) return (await res.json()) as ProviderKey;
       }
 
       // Fallback: find default provider for workspace
-      const res = await fetch(`${this.config.registryUrl}/api/v1/providers?workspaceId=${workspaceId}`);
+      const res = await fetchWithCorrelation(`${this.config.registryUrl}/api/v1/providers?workspaceId=${workspaceId}`);
       if (!res.ok) throw new Error('No providers found');
       const providers = (await res.json()) as Array<{ id: string; is_default?: boolean; isDefault?: boolean }>;
 
@@ -766,7 +767,7 @@ export class AnthropicExecutor {
       if (!defaultProvider) throw new Error('No providers configured');
 
       // Fetch the real key
-      const keyRes = await fetch(`${this.config.registryUrl}/api/v1/providers/${defaultProvider.id}/key`);
+      const keyRes = await fetchWithCorrelation(`${this.config.registryUrl}/api/v1/providers/${defaultProvider.id}/key`);
       if (!keyRes.ok) throw new Error('Failed to fetch API key');
       return (await keyRes.json()) as ProviderKey;
     } catch {
@@ -776,7 +777,7 @@ export class AnthropicExecutor {
 
   private async fetchConversationHistory(conversationId: string): Promise<Anthropic.MessageParam[]> {
     try {
-      const res = await fetch(
+      const res = await fetchWithCorrelation(
         `${this.config.registryUrl}/api/v1/conversations/${conversationId}/messages?limit=50`,
       );
       if (!res.ok) return [];
@@ -817,7 +818,7 @@ export class AnthropicExecutor {
     actionButtons: unknown[],
   ): Promise<void> {
     try {
-      await fetch(`${this.config.registryUrl}/api/v1/conversations/${conversationId}/messages`, {
+      await fetchWithCorrelation(`${this.config.registryUrl}/api/v1/conversations/${conversationId}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
