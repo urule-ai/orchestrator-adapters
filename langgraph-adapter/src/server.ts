@@ -6,11 +6,14 @@ import swaggerUi from '@fastify/swagger-ui';
 import fastifyWebsocket from '@fastify/websocket';
 import { authMiddleware } from '@urule/auth-middleware';
 import { correlationIdPlugin } from '@urule/correlation-id';
+import { EventBus } from '@urule/events';
 import { metricsPlugin } from '@urule/observability';
+import { connect } from 'nats';
 import { errorHandler } from './middleware/error-handler.js';
 import { loadConfig } from './config.js';
 import { LangGraphAdapter } from './adapter/langgraph-adapter.js';
 import { AnthropicExecutor } from './adapter/anthropic-executor.js';
+import { startApprovalBroadcaster } from './adapter/approval-broadcaster.js';
 import { runsRoutes } from './routes/runs.routes.js';
 import { chatRoutes } from './routes/chat.routes.js';
 import { wsRoutes, broadcast } from './routes/ws.routes.js';
@@ -96,6 +99,20 @@ export async function buildServer() {
 
   // WebSocket routes (new — real-time streaming)
   await app.register(wsRoutes);
+
+  // Approval-event NATS subscriber: bridges urule.approvals.* topics
+  // (published by the approvals service) to per-workspace WebSocket
+  // pushes so office-ui's notification center can react in real time.
+  // Optional — if NATS is unreachable, the polling-based approvals
+  // page keeps working unchanged.
+  try {
+    const conn = await connect({ servers: config.natsUrl });
+    const eventBus = new EventBus(conn, { source: 'langgraph-adapter' });
+    startApprovalBroadcaster(eventBus);
+    app.log.info({ natsUrl: config.natsUrl }, 'Approval-event broadcaster started');
+  } catch (err) {
+    app.log.warn({ err, natsUrl: config.natsUrl }, 'NATS unavailable; approval push will not be broadcast');
+  }
 
   return { app, config };
 }
