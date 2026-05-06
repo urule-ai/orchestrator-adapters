@@ -24,6 +24,7 @@
     "@urule/auth-middleware": "file:../../urule/packages/auth-middleware",
     "@urule/correlation-id": "file:../../urule/packages/correlation-id",
     "@urule/events": "file:../../urule/packages/events",
+    "@urule/llm-providers": "file:../../urule/packages/llm-providers",
     "@urule/observability": "file:../../urule/packages/observability",
     "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/auto-instrumentations-node": "^0.55.0",

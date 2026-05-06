@@ -7,6 +7,11 @@ import fastifyWebsocket from '@fastify/websocket';
 import { authMiddleware } from '@urule/auth-middleware';
 import { correlationIdPlugin } from '@urule/correlation-id';
 import { EventBus } from '@urule/events';
+import {
+  AnthropicProvider,
+  OpenAIProvider,
+  createProviderRegistry,
+} from '@urule/llm-providers';
 import { metricsPlugin } from '@urule/observability';
 import { connect } from 'nats';
 import { errorHandler } from './middleware/error-handler.js';
@@ -81,8 +86,18 @@ export async function buildServer() {
   // Existing orchestrator adapter (kept for run management)
   const adapter = new LangGraphAdapter(config.langgraphServerUrl);
 
-  // New Anthropic executor for real AI chat
-  const executor = new AnthropicExecutor(config);
+  // LLM provider registry — maps provider name (`anthropic`, `openai`,
+  // …) to a streaming impl. Adding a new provider (Gemini, Ollama, a
+  // local vLLM endpoint) is a one-line `new GeminiProvider()` here;
+  // every orchestrator adapter that consumes `@urule/llm-providers`
+  // picks it up the moment its package.json is bumped. Order doesn't
+  // matter — `createProviderRegistry` keys by `provider.name`.
+  const llmProviders = createProviderRegistry([new AnthropicProvider(), new OpenAIProvider()]);
+
+  // Chat executor — orchestrates a turn against any registered
+  // LlmProvider, picking by the agent's configured provider id. Class
+  // name is historical; impl is now provider-agnostic.
+  const executor = new AnthropicExecutor(config, llmProviders);
   executor.setBroadcast(broadcast);
 
   // Health check

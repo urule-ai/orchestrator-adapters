@@ -1,6 +1,13 @@
-import Anthropic from '@anthropic-ai/sdk';
 import { ulid } from 'ulid';
 import { fetchWithCorrelation } from '@urule/correlation-id';
+import type {
+  LlmEvent,
+  LlmMessage,
+  LlmProvider,
+  LlmProviderRegistry,
+  LlmToolCall,
+  LlmToolDefinition,
+} from '@urule/llm-providers';
 import type { Config } from '../config.js';
 
 // ---------------------------------------------------------------------------
@@ -43,11 +50,11 @@ interface ProviderKey {
 // System tools injected into every agent conversation
 // ---------------------------------------------------------------------------
 
-const HIRE_AGENT_TOOL: Anthropic.Tool = {
+const HIRE_AGENT_TOOL: LlmToolDefinition = {
   name: 'hire_agent',
   description:
     'Request to hire another specialist agent for a subtask. Use this when the current task requires expertise outside your specialty. The hiring must be approved by the user before proceeding.',
-  input_schema: {
+  inputSchema: {
     type: 'object' as const,
     properties: {
       agent_role: {
@@ -72,11 +79,11 @@ const HIRE_AGENT_TOOL: Anthropic.Tool = {
   },
 };
 
-const CREATE_TASK_TOOL: Anthropic.Tool = {
+const CREATE_TASK_TOOL: LlmToolDefinition = {
   name: 'create_task',
   description:
     'Create a tracked task for work you are about to begin. This makes your work visible to the user and allows them to track progress.',
-  input_schema: {
+  inputSchema: {
     type: 'object' as const,
     properties: {
       title: { type: 'string', description: 'Short title for the task' },
@@ -91,11 +98,11 @@ const CREATE_TASK_TOOL: Anthropic.Tool = {
   },
 };
 
-const UPDATE_TASK_TOOL: Anthropic.Tool = {
+const UPDATE_TASK_TOOL: LlmToolDefinition = {
   name: 'update_task_status',
   description:
     'Update the status of a task you are working on. Use "in_progress" when starting, "review" when finished and ready for user acceptance.',
-  input_schema: {
+  inputSchema: {
     type: 'object' as const,
     properties: {
       task_id: { type: 'string', description: 'The ID of the task to update' },
@@ -110,7 +117,7 @@ const UPDATE_TASK_TOOL: Anthropic.Tool = {
   },
 };
 
-const SYSTEM_TOOLS: Anthropic.Tool[] = [HIRE_AGENT_TOOL, CREATE_TASK_TOOL, UPDATE_TASK_TOOL];
+const SYSTEM_TOOLS: LlmToolDefinition[] = [HIRE_AGENT_TOOL, CREATE_TASK_TOOL, UPDATE_TASK_TOOL];
 
 // ---------------------------------------------------------------------------
 // Broadcast callback type (set by WebSocket module)
@@ -122,16 +129,51 @@ export type BroadcastFn = (conversationId: string, event: Record<string, unknown
 // AnthropicExecutor
 // ---------------------------------------------------------------------------
 
+/**
+ * Chat executor — orchestrates a conversation turn against any
+ * `LlmProvider`. The class name is kept as `AnthropicExecutor` for
+ * back-compat; internally it is provider-agnostic and selects the
+ * impl based on the agent's configured provider id.
+ */
 export class AnthropicExecutor {
   private readonly config: Config;
+  private readonly providers: LlmProviderRegistry;
   private broadcast: BroadcastFn = () => {};
 
-  constructor(config: Config) {
+  constructor(config: Config, providers: LlmProviderRegistry) {
     this.config = config;
+    this.providers = providers;
   }
 
   setBroadcast(fn: BroadcastFn): void {
     this.broadcast = fn;
+  }
+
+  /**
+   * Resolve the LlmProvider for a provider key. The key's `provider`
+   * field is one of `'anthropic' | 'claude' | 'openai' | 'gemini'`
+   * etc.; we normalise to lowercase and fall back to anthropic when a
+   * deployment didn't register an alternate provider — the default
+   * matches the historical Claude-only behaviour.
+   */
+  private resolveProvider(providerKey: ProviderKey): LlmProvider {
+    const name = providerKey.provider.toLowerCase();
+    const aliasMap: Record<string, string> = {
+      claude: 'anthropic',
+      anthropic: 'anthropic',
+      openai: 'openai',
+      gpt: 'openai',
+    };
+    const canonical = aliasMap[name] ?? name;
+    return (
+      this.providers.get(canonical) ??
+      this.providers.get('anthropic') ??
+      // Last resort: pick whatever's registered, so a deployment that
+      // ships only an OpenAI provider still works against an Anthropic-
+      // labelled key (configuration mismatch surfaces as a 4xx from
+      // the upstream API rather than a silent crash here).
+      this.providers.list()[0]!
+    );
   }
 
   async chat(params: ChatParams): Promise<void> {
@@ -141,22 +183,17 @@ export class AnthropicExecutor {
     const agentConfig = await this.fetchAgentConfig(agentId);
     const systemPrompt = agentConfig.systemPrompt ?? 'You are a helpful AI assistant.';
 
-    // 2. Fetch provider API key
+    // 2. Fetch provider API key + select the LlmProvider impl
     const providerKey = await this.fetchProviderKey(workspaceId, agentConfig.provider_id);
+    const provider = this.resolveProvider(providerKey);
 
-    // 3. Fetch conversation history from registry
+    // 3. Fetch conversation history (provider-agnostic LlmMessage[])
     const history = await this.fetchConversationHistory(conversationId);
 
-    // 4. Create Anthropic client with the user's API key
-    const anthropic = new Anthropic({ apiKey: providerKey.apiKey });
+    // 4. Build the message list — append the new user turn.
+    const llmMessages: LlmMessage[] = [...history, { role: 'user', content: userMessage }];
 
-    // 5. Build messages array
-    const anthropicMessages: Anthropic.MessageParam[] = [
-      ...history,
-      { role: 'user', content: userMessage },
-    ];
-
-    // 6. Create a streaming agent message placeholder
+    // 5. Create a streaming agent message placeholder
     const messageId = ulid();
 
     // Broadcast thinking state
@@ -167,58 +204,60 @@ export class AnthropicExecutor {
     });
 
     try {
-      // 7. Call Anthropic with streaming
-      const stream = anthropic.messages.stream({
-        model: providerKey.modelName || 'claude-sonnet-4-20250514',
-        max_tokens: 4096,
-        system: systemPrompt,
-        messages: anthropicMessages,
-        tools: SYSTEM_TOOLS,
-      });
+      // 6. Stream a chat completion via the LlmProvider. The model
+      // name comes from the providerKey for non-anthropic providers;
+      // anthropic falls back to the historical default if the key
+      // didn't ship one.
+      const model =
+        providerKey.modelName ||
+        (provider.name === 'anthropic' ? 'claude-sonnet-4-20250514' : 'gpt-4o-mini');
 
       let fullResponse = '';
-      let hasToolUse = false;
-      const toolUseBlocks: Array<{ id: string; name: string; input: Record<string, unknown> }> = [];
+      const toolUseBlocks: LlmToolCall[] = [];
+      let hadError = false;
 
-      stream.on('text', (text) => {
-        fullResponse += text;
-        this.broadcast(conversationId, {
-          type: 'message.streaming',
-          message_id: messageId,
-          delta: text,
-          done: false,
-        });
-      });
-
-      const finalMessage = await stream.finalMessage();
-
-      // Process content blocks for tool use
-      for (const block of finalMessage.content) {
-        if (block.type === 'tool_use') {
-          hasToolUse = true;
-          toolUseBlocks.push({
-            id: block.id,
-            name: block.name,
-            input: block.input as Record<string, unknown>,
+      for await (const ev of provider.streamChat({
+        apiKey: providerKey.apiKey,
+        model,
+        systemPrompt,
+        messages: llmMessages,
+        tools: SYSTEM_TOOLS,
+        maxTokens: 4096,
+      })) {
+        if (ev.type === 'text_delta') {
+          fullResponse += ev.delta;
+          this.broadcast(conversationId, {
+            type: 'message.streaming',
+            message_id: messageId,
+            delta: ev.delta,
+            done: false,
           });
+        } else if (ev.type === 'tool_call') {
+          toolUseBlocks.push(ev.toolCall);
+        } else if (ev.type === 'message_complete') {
+          // fullText/toolCalls already accumulated as we streamed;
+          // the complete event is informational here.
+        } else if (ev.type === 'error') {
+          hadError = true;
+          throw new Error(ev.error);
         }
       }
 
-      if (hasToolUse) {
-        // Handle tool calls
+      if (toolUseBlocks.length > 0) {
         await this.handleToolCalls(
-          anthropic,
+          provider,
           providerKey,
+          model,
           systemPrompt,
-          anthropicMessages,
-          finalMessage,
+          llmMessages,
+          fullResponse,
           toolUseBlocks,
           conversationId,
           agentId,
           workspaceId,
           messageId,
         );
-      } else {
+      } else if (!hadError) {
         // No tool calls — save the response as a complete message
         this.broadcast(conversationId, {
           type: 'message.streaming',
@@ -227,10 +266,8 @@ export class AnthropicExecutor {
           done: true,
         });
 
-        // Save the assistant message to registry
         await this.saveMessage(conversationId, agentId, fullResponse, 'markdown', []);
 
-        // Broadcast new message
         this.broadcast(conversationId, {
           type: 'message.new',
           message: {
@@ -269,27 +306,21 @@ export class AnthropicExecutor {
   // ---------------------------------------------------------------------------
 
   private async handleToolCalls(
-    anthropic: Anthropic,
+    provider: LlmProvider,
     providerKey: ProviderKey,
+    model: string,
     systemPrompt: string,
-    previousMessages: Anthropic.MessageParam[],
-    assistantMessage: Anthropic.Message,
-    toolUseBlocks: Array<{ id: string; name: string; input: Record<string, unknown> }>,
+    previousMessages: LlmMessage[],
+    assistantText: string,
+    toolUseBlocks: LlmToolCall[],
     conversationId: string,
     agentId: string,
     workspaceId: string,
     messageId: string,
   ): Promise<void> {
-    // Build text from non-tool blocks
-    let textContent = '';
-    for (const block of assistantMessage.content) {
-      if (block.type === 'text') {
-        textContent += block.text;
-      }
-    }
-
-    // Process each tool call
-    const toolResults: Anthropic.ToolResultBlockParam[] = [];
+    // Execute each tool and collect both the JSON result (fed back to
+    // the model) and any action buttons (surfaced to the user UI).
+    const toolResultMessages: LlmMessage[] = [];
 
     for (const tool of toolUseBlocks) {
       this.broadcast(conversationId, {
@@ -300,15 +331,17 @@ export class AnthropicExecutor {
       });
 
       const result = await this.executeTool(tool.name, tool.input, conversationId, agentId, workspaceId);
-      toolResults.push({
-        type: 'tool_result',
-        tool_use_id: tool.id,
+      toolResultMessages.push({
+        role: 'tool',
+        toolCallId: tool.id,
         content: JSON.stringify(result.output),
       });
 
-      // If the tool produced action buttons (hire_agent, update_task_status with review), include them
+      // If the tool produced action buttons (hire_agent, update_task_status
+      // with review), surface them and STOP the conversation — we wait
+      // for the user to click before continuing.
       if (result.actionButtons && result.actionButtons.length > 0) {
-        const combinedContent = textContent + (result.message ? `\n\n${result.message}` : '');
+        const combinedContent = assistantText + (result.message ? `\n\n${result.message}` : '');
         await this.saveMessage(conversationId, agentId, combinedContent, 'markdown', result.actionButtons);
 
         this.broadcast(conversationId, {
@@ -332,35 +365,49 @@ export class AnthropicExecutor {
             created_at: new Date().toISOString(),
           },
         });
-        return; // Don't continue the conversation — waiting for user action
+        return;
       }
     }
 
-    // Continue the conversation with tool results
-    const continuedMessages: Anthropic.MessageParam[] = [
+    // Continue the conversation with tool results. The assistant
+    // turn carries both the text it produced and the tool calls it
+    // requested — providers that need this distinction (anthropic
+    // expects the assistant message to contain `tool_use` blocks)
+    // get the right shape, while providers that don't (openai
+    // serialises tool calls separately) ignore the attached calls
+    // on the user-side encoding.
+    const continuedMessages: LlmMessage[] = [
       ...previousMessages,
-      { role: 'assistant', content: assistantMessage.content },
-      { role: 'user', content: toolResults },
+      { role: 'assistant', content: assistantText, toolCalls: toolUseBlocks },
+      ...toolResultMessages,
     ];
 
-    // Make another API call with tool results
-    const followUp = await anthropic.messages.create({
-      model: providerKey.modelName || 'claude-sonnet-4-20250514',
-      max_tokens: 4096,
-      system: systemPrompt,
+    let followUpText = '';
+    for await (const ev of provider.streamChat({
+      apiKey: providerKey.apiKey,
+      model,
+      systemPrompt,
       messages: continuedMessages,
       tools: SYSTEM_TOOLS,
-    });
-
-    let followUpText = '';
-    for (const block of followUp.content) {
-      if (block.type === 'text') {
-        followUpText += block.text;
+      maxTokens: 4096,
+    })) {
+      if (ev.type === 'text_delta') {
+        followUpText += ev.delta;
+        this.broadcast(conversationId, {
+          type: 'message.streaming',
+          message_id: messageId,
+          delta: ev.delta,
+          done: false,
+        });
+      } else if (ev.type === 'error') {
+        throw new Error(ev.error);
       }
+      // Ignore tool_call / message_complete on the follow-up — the
+      // model rarely chains another tool call here, and if it did
+      // we'd want a separate iteration.
     }
 
-    // Save and broadcast
-    await this.saveMessage(conversationId, agentId, followUpText || textContent, 'markdown', []);
+    await this.saveMessage(conversationId, agentId, followUpText || assistantText, 'markdown', []);
 
     this.broadcast(conversationId, {
       type: 'message.streaming',
@@ -376,7 +423,7 @@ export class AnthropicExecutor {
         conversation_id: conversationId,
         sender_id: agentId,
         sender_type: 'agent',
-        content: followUpText || textContent,
+        content: followUpText || assistantText,
         content_type: 'markdown',
         status: 'delivered',
         created_at: new Date().toISOString(),
@@ -775,7 +822,7 @@ export class AnthropicExecutor {
     }
   }
 
-  private async fetchConversationHistory(conversationId: string): Promise<Anthropic.MessageParam[]> {
+  private async fetchConversationHistory(conversationId: string): Promise<LlmMessage[]> {
     try {
       const res = await fetchWithCorrelation(
         `${this.config.registryUrl}/api/v1/conversations/${conversationId}/messages?limit=50`,
@@ -787,24 +834,24 @@ export class AnthropicExecutor {
         content: string;
       }>;
 
-      // Convert to Anthropic format, skip the most recent user message (it's passed separately)
-      const anthropicMessages: Anthropic.MessageParam[] = [];
+      // Convert to provider-agnostic LlmMessage[]; skip the most-recent
+      // user message since chat() appends it separately.
+      const llmMessages: LlmMessage[] = [];
       for (const msg of messages) {
         const senderType = msg.sender_type ?? msg.senderType;
         if (senderType === 'user') {
-          anthropicMessages.push({ role: 'user', content: msg.content });
+          llmMessages.push({ role: 'user', content: msg.content });
         } else if (senderType === 'agent') {
-          anthropicMessages.push({ role: 'assistant', content: msg.content });
+          llmMessages.push({ role: 'assistant', content: msg.content });
         }
-        // Skip system messages in the Anthropic context
+        // System messages are excluded from the LLM context.
       }
 
-      // Remove the last user message since we pass it separately
-      if (anthropicMessages.length > 0 && anthropicMessages[anthropicMessages.length - 1]?.role === 'user') {
-        anthropicMessages.pop();
+      if (llmMessages.length > 0 && llmMessages[llmMessages.length - 1]?.role === 'user') {
+        llmMessages.pop();
       }
 
-      return anthropicMessages;
+      return llmMessages;
     } catch {
       return [];
     }
